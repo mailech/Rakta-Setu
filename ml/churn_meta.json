@@ -1,0 +1,21 @@
+{
+  "model": "LogisticRegression",
+  "auc_mean": 0.9783,
+  "auc_std": 0.0028,
+  "n_positives": 679,
+  "n_negatives": 6267,
+  "features": [
+    "days_since_last_donation",
+    "days_since_last_contact",
+    "calls_to_donations_ratio",
+    "donations_till_date",
+    "frequency_in_days",
+    "role_Bridge_Donor",
+    "role_Emergency_Donor",
+    "role_Guest",
+    "role_Patient",
+    "role_Volunteer"
+  ],
+  "sim_today": "2025-08-08T00:00:00",
+  "note": "The Inactive label is strongly recency-determined, so AUC is high by construction. Logistic regression is used for interpretability; the operational value is flagging at-risk donors before churn is labeled."
+}

@@ -1,0 +1,8 @@
+[
+  {"id": "apollo-jh",   "name": "Apollo Hospitals, Jubilee Hills", "lat": 17.4239, "lon": 78.4738, "city": "Hyderabad"},
+  {"id": "nims",        "name": "NIMS, Punjagutta",               "lat": 17.4286, "lon": 78.4561, "city": "Hyderabad"},
+  {"id": "yashoda-sg",  "name": "Yashoda Hospital, Somajiguda",   "lat": 17.4256, "lon": 78.4561, "city": "Hyderabad"},
+  {"id": "kims-sec",    "name": "KIMS, Secunderabad",             "lat": 17.4399, "lon": 78.4983, "city": "Hyderabad"},
+  {"id": "osmania",     "name": "Osmania General Hospital",       "lat": 17.3713, "lon": 78.4804, "city": "Hyderabad"},
+  {"id": "rainbow-bh",  "name": "Rainbow Children's, Banjara Hills","lat": 17.4156, "lon": 78.4347, "city": "Hyderabad"}
+]

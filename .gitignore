@@ -1,0 +1,37 @@
+# ─── SECRETS & PII — never commit ───────────────────────
+# Twilio account SID + auth token (runtime config)
+data/twilio_cfg.json
+# AWS bucket/region (runtime config)
+data/aws_cfg.json
+data/msg91_cfg.json
+# real donor phone numbers (PII)
+data/live_phones.json
+.env
+*.env
+!*.env.example
+
+# ─── Runtime state / generated at runtime ───────────────
+data/policy_cfg.json
+data/rakta_setu.db
+data/llm_cache/
+api_log.txt
+*.log
+
+# ─── Python ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ─── Node / frontend ────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+
+# ─── OS / editor ────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
