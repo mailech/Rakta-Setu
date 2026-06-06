@@ -795,6 +795,8 @@ class TwilioConfig(BaseModel):
     donor_phone: Optional[str] = None
     patient_phone: Optional[str] = None
     enabled: Optional[bool] = None
+    call_mode: Optional[str] = None         # 'conversational' | 'dtmf'
+    call_language: Optional[str] = None     # te/hi/en/kn/ta
 
 
 @app.post("/twilio/config")
@@ -823,6 +825,23 @@ async def twilio_test(req: TwilioConfig):
     phone = req.donor_phone or twi.cfg["donor_phone"]
     return twi.send_whatsapp_confirm("NEG-TEST", "test-donor", phone,
         "RAKTA-SETU test. Reply YES to confirm or NO to decline.")
+
+
+@app.post("/twilio/voice/converse/{neg_id}/{user_id}")
+async def twilio_voice_converse(neg_id: str, user_id: str, SpeechResult: str = Form("")):
+    """Webhook: donor's spoken Telugu/Hindi -> Bedrock replies in their language (voice agent)."""
+    from notify import voice_agent
+    twiml, intent, spoken, donor_text = await asyncio.to_thread(
+        voice_agent.handle_turn, neg_id, user_id, SpeechResult)
+    # stream the live conversation onto the Floor
+    await ws_manager.broadcast(neg_id, {
+        "neg_id": neg_id, "from": f"proxy:{user_id}", "to": "guardian", "round": 3,
+        "action": "ACCEPT" if intent == "CONFIRM" else "DECLINE" if intent == "DECLINE" else "COUNTER",
+        "params": {"channel": "voice_ai", "donor_said": donor_text[:60]},
+        "say": f"🗣️ Donor: \"{donor_text[:50]}\"  →  🤖 {spoken[:60]}"})
+    if intent == "CONFIRM":
+        _notify_patient(user_id, neg_id)
+    return Response(content=twiml, media_type="application/xml")
 
 
 @app.post("/twilio/whatsapp/inbound")

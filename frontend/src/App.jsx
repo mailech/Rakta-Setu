@@ -64,7 +64,14 @@ function Console({ bridges, stats, refresh }) {
   const end = useRef(null)
   const negRef = useRef(null)
 
-  useEffect(()=>{ fetch(`${API}/hospitals`).then(r=>r.json()).then(d=>{setHospitals(d.hospitals||[]); if(d.hospitals?.[0]) setIntake(i=>({...i, hospital_id:d.hospitals[0].id}))}).catch(()=>{}) },[])
+  useEffect(()=>{
+    let tries = 0
+    const grab = ()=> fetch(`${API}/hospitals`).then(r=>r.json()).then(d=>{
+      if (d.hospitals?.length){ setHospitals(d.hospitals); setIntake(i=>({...i, hospital_id:i.hospital_id||d.hospitals[0].id})) }
+      else if (tries++ < 6) setTimeout(grab, 1500)
+    }).catch(()=>{ if (tries++ < 6) setTimeout(grab, 1500) })
+    grab()
+  },[])
 
   useEffect(()=>{ end.current?.scrollIntoView({behavior:'smooth'}) }, [messages, typing])
 
@@ -413,7 +420,7 @@ function Board({ bridges, recovery, churn }) {
 // PHONE SIMULATOR  (pre-screen + confirm + screening opt-in)
 // ══════════════════════════════════════════════════════
 function Setup(){
-  const [twi, setTwi] = useState({donor_phone:'', patient_phone:'', public_base:'', account_sid:'', auth_token:'', call_from:'', enabled:false})
+  const [twi, setTwi] = useState({donor_phone:'', patient_phone:'', public_base:'', account_sid:'', auth_token:'', call_from:'', enabled:false, call_mode:'conversational', call_language:'te'})
   const [st, setSt] = useState(null)
   const [phones, setPhones] = useState([])
   const [newPhone, setNewPhone] = useState('')
@@ -422,7 +429,7 @@ function Setup(){
   const [bedrock, setBedrock] = useState(null)
   const [trans, setTrans] = useState(null)
   const load = ()=>{
-    fetch(`${API}/twilio/config`).then(r=>r.json()).then(s=>{setSt(s); setTwi(t=>({...t, donor_phone:s.donor_phone||t.donor_phone, patient_phone:s.patient_phone||t.patient_phone, public_base:s.public_base||t.public_base, call_from:s.call_from||t.call_from, enabled:s.enabled}))}).catch(()=>{})
+    fetch(`${API}/twilio/config`).then(r=>r.json()).then(s=>{setSt(s); setTwi(t=>({...t, donor_phone:s.donor_phone||t.donor_phone, patient_phone:s.patient_phone||t.patient_phone, public_base:s.public_base||t.public_base, call_from:s.call_from||t.call_from, enabled:s.enabled, call_mode:s.call_mode||t.call_mode, call_language:s.call_language||t.call_language}))}).catch(()=>{})
     fetch(`${API}/live-phones`).then(r=>r.json()).then(d=>setPhones(d.phones||[])).catch(()=>{})
     fetch(`${API}/policy`).then(r=>r.json()).then(setPol).catch(()=>{})
     fetch(`${API}/aws/status`).then(r=>r.json()).then(setAws).catch(()=>{})
@@ -455,6 +462,19 @@ function Setup(){
             <label className="fld">Account SID<input className="input" value={twi.account_sid} onChange={e=>setTwi({...twi,account_sid:e.target.value})} placeholder={st?.configured?'saved (leave blank to keep)':'AC...'}/></label>
             <label className="fld">Auth Token<input className="input" type="password" value={twi.auth_token} onChange={e=>setTwi({...twi,auth_token:e.target.value})} placeholder={st?.configured?'saved (leave blank to keep)':'token'}/></label>
             <label className="fld">Patient phone (gets confirmation SMS)<input className="input" value={twi.patient_phone} onChange={e=>setTwi({...twi,patient_phone:e.target.value})}/></label>
+            <label className="fld">Call mode
+              <select className="input" value={twi.call_mode} onChange={e=>setTwi({...twi,call_mode:e.target.value})}>
+                <option value="conversational">🗣️ Conversational (Bedrock AI voice)</option>
+                <option value="dtmf">Press 1 / 2 (keypad)</option>
+              </select></label>
+            <label className="fld">Call language
+              <select className="input" value={twi.call_language} onChange={e=>setTwi({...twi,call_language:e.target.value})}>
+                <option value="te">Telugu (voice experimental)</option>
+                <option value="hi">Hindi (voice reliable)</option>
+                <option value="en">Indian English (reliable)</option>
+                <option value="kn">Kannada</option>
+                <option value="ta">Tamil</option>
+              </select></label>
           </div>
           <div className="pref-row" style={{marginTop:8}}>
             <div><div className="pref-label">Enable real alerts</div><div style={{fontSize:11,color:'var(--text-muted)'}}>Off = simulate in-app on the Floor</div></div>

@@ -100,16 +100,25 @@ async def node_collect(state: NegState) -> dict:
     ctx = state["ctx"]; llm_fn = ctx["llm_fn"]
     timeout = state["round_timeout"]; requests = state["requests"]
 
-    async def proxy_respond(uid, req, donor_rec):
-        proxy = ProxyAgent(donor_rec, llm_fn)
+    # LLM (Bedrock) is a blocking network call. Two guards so a 40-donor emergency
+    # doesn't make 40 blocking calls and freeze the event loop:
+    #  1) only the first LLM_PROXY_CAP proxies use the LLM (the rest are rule-based,
+    #     instant, with canned 'say' lines) — keeps Bedrock visible but cheap/fast.
+    #  2) every proxy.respond runs in a worker thread (asyncio.to_thread) so the
+    #     blocking call never stalls the server's event loop.
+    LLM_PROXY_CAP = 6
+
+    async def proxy_respond(idx, uid, req, donor_rec):
+        use_llm = llm_fn if idx < LLM_PROXY_CAP else None
+        proxy = ProxyAgent(donor_rec, use_llm)
         await asyncio.sleep(random.uniform(0.1, 0.4))   # theater
-        resp = proxy.respond(req)
+        resp = await asyncio.to_thread(proxy.respond, req)   # off the event loop
         resp["neg_id"] = neg_id; resp["round"] = 1; resp["to"] = f"guardian:{bridge_id}"
         _log(neg_id, 1, resp)
         print(f"  {proxy.alias}: {resp['action']} — {resp['say'][:60]}")
         return resp
 
-    tasks = [proxy_respond(uid, req, dr) for uid, (req, dr) in requests.items()]
+    tasks = [proxy_respond(i, uid, req, dr) for i, (uid, (req, dr)) in enumerate(requests.items())]
     try:
         results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
         responses = [r for r in results if isinstance(r, dict)]
@@ -167,7 +176,7 @@ async def node_escalate(state: NegState) -> dict:
         req["params"]["source"] = oc.get("source", "exchange")
         _log(neg_id, 2, req)
         await asyncio.sleep(random.uniform(0.1, 0.3))
-        resp = proxy.respond(req); resp["neg_id"] = neg_id; resp["round"] = 2
+        resp = await asyncio.to_thread(proxy.respond, req); resp["neg_id"] = neg_id; resp["round"] = 2
         _log(neg_id, 2, resp)
         print(f"  Exchange candidate {proxy.alias}: {resp['action']}")
         if resp["action"] in {"OFFER", "CONDITIONAL_OFFER", "REQUEST_HUMAN_CONFIRM"}:
@@ -326,7 +335,9 @@ def _dispatch_real_channel(neg_id, bridge, accepted_resp):
         except Exception as te:
             print(f"[graph] translate skipped: {te}")
 
-        res = twi.send_whatsapp_confirm(neg_id, uid, None, body)   # phone resolved internally
+        call_ctx = {"bg": bg, "hospital": hosp, "date": date, "time": tm,
+                    "lang": (locals().get("prof", {}) or {}).get("preferred_language", "te")}
+        res = twi.send_whatsapp_confirm(neg_id, uid, None, body, call_ctx=call_ctx)  # phone resolved internally
         _log(neg_id, 3, {
             "neg_id": neg_id, "round": 3, "from": "exchange:singleton", "to": "donor",
             "action": "REQUEST_HUMAN_CONFIRM",

@@ -38,6 +38,8 @@ cfg = {
     "donor_phone":   os.environ.get("DONOR_PHONE", ""),
     "patient_phone": os.environ.get("PATIENT_PHONE", "+917416470528"),
     "enabled":       False,
+    "call_mode":     os.environ.get("CALL_MODE", "conversational"),  # 'conversational' | 'dtmf'
+    "call_language": os.environ.get("CALL_LANGUAGE", "te"),          # te/hi/en/kn/ta
 }
 
 # Load persisted config if it exists (survives restarts)
@@ -93,6 +95,8 @@ def public_config() -> dict:
         "public_base":   cfg["public_base"],
         "donor_phone":   cfg["donor_phone"],
         "patient_phone": cfg["patient_phone"],
+        "call_mode":     cfg["call_mode"],
+        "call_language": cfg["call_language"],
         "escalate_after": ESCALATE_AFTER,
         "last_event":    last_event,
     }
@@ -188,15 +192,16 @@ def get_next_live_phone(user_id: str) -> str:
         return cfg["donor_phone"]
 
 
-def send_whatsapp_confirm(neg_id: str, user_id: str, phone: str, body: str) -> dict:
-    """Send the SMS Confirm/Decline ask and register the pending response."""
+def send_whatsapp_confirm(neg_id: str, user_id: str, phone: str, body: str, call_ctx: dict = None) -> dict:
+    """Send the SMS Confirm/Decline ask and register the pending response.
+    call_ctx (bg/hospital/date/lang) lets the escalation be a Bedrock voice chat."""
     global last_event
-    
+
     # Use real phone mapping instead of the single UI phone
     real_phone = get_next_live_phone(user_id)
     phone = _norm(real_phone)
-    
-    pending[phone] = {"neg_id": neg_id, "user_id": user_id,
+
+    pending[phone] = {"neg_id": neg_id, "user_id": user_id, "ctx": call_ctx or {},
                       "ts": datetime.utcnow().isoformat(), "escalated": False}
 
     # ── 20-second escalation timer ──────────────────────────────────────────
@@ -225,10 +230,15 @@ def send_whatsapp_confirm(neg_id: str, user_id: str, phone: str, body: str) -> d
         except Exception:
             pass
         rec["escalated"] = True
-        _p(f"[twilio] No reply in {ESCALATE_AFTER}s — escalating to voice call -> {phone}")
-        prompt = ("A patient urgently needs blood. Your Proxy agent is requesting your "
-                  "confirmation. Press 1 to confirm your donation. Press 2 to decline.")
-        place_escalation_call(neg_id, user_id, phone, prompt)
+        _p(f"[twilio] No reply in {delay}s — escalating to call -> {phone}")
+        if cfg.get("call_mode") == "conversational":
+            # Real Bedrock-powered spoken conversation in the donor's language.
+            from notify import voice_agent
+            voice_agent.place_conversational_call(neg_id, user_id, phone, rec.get("ctx") or {})
+        else:
+            prompt = ("A patient urgently needs blood. Your Proxy agent is requesting your "
+                      "confirmation. Press 1 to confirm your donation. Press 2 to decline.")
+            place_escalation_call(neg_id, user_id, phone, prompt)
 
     t = threading.Thread(target=_escalate_if_unanswered, daemon=True)
     t.start()
