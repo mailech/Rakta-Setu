@@ -61,17 +61,16 @@ async def node_broadcast(state: NegState) -> dict:
     print(f"\n[graph:broadcast] {len(candidates)} candidates (need {guardian.units_needed}, "
           f"overbook x{config.get('OVERBOOK_FACTOR',1.5)})")
 
-    locked = []
+    # Contact ALL matched candidates. We record a lock for the Exchange arbitration
+    # story, but a lock being held (e.g. by an abandoned earlier run) must NOT drop a
+    # donor from this negotiation — otherwise repeated demo triggers starve each other.
+    locked = list(candidates)
     for c in candidates:
-        uid = c["user_id"]
-        if exchange.acquire_lock(uid, neg_id):
-            locked.append(c)
-            log_consent(uid, "negotiation_start", "availability_negotiation", neg_id)
-        else:
-            print(f"  [skip] {uid[:12]}… already negotiating")
+        exchange.acquire_lock(c["user_id"], neg_id)  # best-effort ownership record
+        log_consent(c["user_id"], "negotiation_start", "availability_negotiation", neg_id)
 
     if not locked:
-        print("[graph:broadcast] no available candidates — FAILED")
+        print("[graph:broadcast] no candidates matched — FAILED")
         update_negotiation(neg_id, "FAILED", 0, "FAILED", closed=True)
         return {"failed_early": True, "result": "FAILED", "coverage": 0, "confirmed": [], "declined": []}
 
@@ -200,12 +199,15 @@ async def node_confirm(state: NegState) -> dict:
     # escalate_after, and the donor needs time to answer + press 1. Give a
     # generous window (escalate_after + 90s, min 120s) so it never times out
     # mid-call on stage.
-    timeout = state["round_timeout"]
-    try:
-        from data.policy import get_policy
-        timeout = max(120, int(get_policy().get("escalate_after", 20)) + 90)
-    except Exception:
-        timeout = max(120, timeout)
+    cfg = state.get("config", {}) or {}
+    if cfg.get("CONFIRM_TIMEOUT_SECS"):
+        timeout = int(cfg["CONFIRM_TIMEOUT_SECS"])   # used by the radius-escalation retries
+    else:
+        try:
+            from data.policy import get_policy
+            timeout = max(120, int(get_policy().get("escalate_after", 20)) + 90)
+        except Exception:
+            timeout = max(120, state["round_timeout"])
 
     update_negotiation(neg_id, "CONFIRMING", state["coverage"])
     print(f"[graph:confirm] {len(resolution['accepted'])} requests, {len(backfill_pool)} backfill")

@@ -25,7 +25,7 @@ from typing import Optional, Dict
 import json
 from pathlib import Path
 
-ESCALATE_AFTER = int(os.environ.get("ESCALATE_AFTER_SECS", "20"))
+ESCALATE_AFTER = int(os.environ.get("ESCALATE_AFTER_SECS", "60"))  # 60s default — gives Indian carriers time to deliver international SMS
 _CFG_FILE = Path(__file__).parent.parent / "data" / "twilio_cfg.json"
 _PHONES_FILE = Path(__file__).parent.parent / "data" / "live_phones.json"
 
@@ -40,6 +40,8 @@ cfg = {
     "enabled":       False,
     "call_mode":     os.environ.get("CALL_MODE", "conversational"),  # 'conversational' | 'dtmf'
     "call_language": os.environ.get("CALL_LANGUAGE", "te"),          # te/hi/en/kn/ta
+    "elevenlabs_key":   os.environ.get("ELEVENLABS_API_KEY", ""),    # natural multilingual TTS
+    "elevenlabs_voice": os.environ.get("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL"),  # default 'Sarah'
 }
 
 # Load persisted config if it exists (survives restarts)
@@ -73,7 +75,7 @@ def set_config(**kw):
         # so it posts empty strings on save) — only update with real values.
         if isinstance(v, str):
             v = v.strip()
-            if v == "" and k in ("account_sid", "auth_token", "call_from", "whatsapp_from"):
+            if v == "" and k in ("account_sid", "auth_token", "call_from", "whatsapp_from", "elevenlabs_key"):
                 continue
         cfg[k] = v
     # Persist so restarts don't wipe the config
@@ -97,6 +99,8 @@ def public_config() -> dict:
         "patient_phone": cfg["patient_phone"],
         "call_mode":     cfg["call_mode"],
         "call_language": cfg["call_language"],
+        "elevenlabs":    bool(cfg.get("elevenlabs_key")),
+        "elevenlabs_voice": cfg.get("elevenlabs_voice"),
         "escalate_after": ESCALATE_AFTER,
         "last_event":    last_event,
     }
@@ -216,6 +220,10 @@ def send_whatsapp_confirm(neg_id: str, user_id: str, phone: str, body: str, call
             delay = int(pol.get("escalate_after", ESCALATE_AFTER))
         except Exception:
             delay = ESCALATE_AFTER
+        # Conversational mode: SMS to India is blocked anyway, so call almost
+        # immediately (within ~5s of the request) instead of waiting on a reply.
+        if cfg.get("call_mode") == "conversational":
+            delay = min(delay, 4)
         time.sleep(delay)
         rec = pending.get(phone)
         if not rec or rec.get("escalated"):

@@ -58,7 +58,7 @@ function Console({ bridges, stats, refresh }) {
   const [confirmedDonors, setConfirmedDonors] = useState([])
   const [mode, setMode] = useState('request')   // 'request' (patient intake) | 'bridge'
   const [hospitals, setHospitals] = useState([])
-  const [intake, setIntake] = useState({blood_group:'B+', hospital_id:'', units:1, days:3, time:'9:00 AM', emergency:true, radius_km:10})
+  const [intake, setIntake] = useState({blood_group:'B+', hospital_id:'', units:1, days:3, time:'9:00 AM', emergency:true, radius_km:10, language:'te'})
   const [reqInfo, setReqInfo] = useState(null)
   const ws = useRef(null)
   const end = useRef(null)
@@ -185,6 +185,14 @@ function Console({ bridges, stats, refresh }) {
                       <input className="input" value={intake.time} onChange={e=>setIntake({...intake,time:e.target.value})}/></label>
                     <label>Search radius (km)
                       <input className="input" type="number" min="1" value={intake.radius_km} onChange={e=>setIntake({...intake,radius_km:Number(e.target.value)})}/></label>
+                    <label>🗣️ Donor's language (for the call)
+                      <select className="input" value={intake.language} onChange={e=>setIntake({...intake,language:e.target.value})}>
+                        <option value="te">Telugu</option>
+                        <option value="hi">Hindi</option>
+                        <option value="en">Indian English</option>
+                        <option value="kn">Kannada</option>
+                        <option value="ta">Tamil</option>
+                      </select></label>
                   </div>
                   <div className="pref-row" style={{borderBottom:'none',padding:'4px 0'}}>
                     <div><div style={{fontWeight:700,fontSize:13}}>🚨 Emergency</div>
@@ -420,7 +428,7 @@ function Board({ bridges, recovery, churn }) {
 // PHONE SIMULATOR  (pre-screen + confirm + screening opt-in)
 // ══════════════════════════════════════════════════════
 function Setup(){
-  const [twi, setTwi] = useState({donor_phone:'', patient_phone:'', public_base:'', account_sid:'', auth_token:'', call_from:'', enabled:false, call_mode:'conversational', call_language:'te'})
+  const [twi, setTwi] = useState({donor_phone:'', patient_phone:'', public_base:'', account_sid:'', auth_token:'', call_from:'', enabled:false, call_mode:'conversational', call_language:'te', elevenlabs_key:''})
   const [st, setSt] = useState(null)
   const [phones, setPhones] = useState([])
   const [newPhone, setNewPhone] = useState('')
@@ -469,12 +477,14 @@ function Setup(){
               </select></label>
             <label className="fld">Call language
               <select className="input" value={twi.call_language} onChange={e=>setTwi({...twi,call_language:e.target.value})}>
-                <option value="te">Telugu (voice experimental)</option>
-                <option value="hi">Hindi (voice reliable)</option>
-                <option value="en">Indian English (reliable)</option>
+                <option value="te">Telugu</option>
+                <option value="hi">Hindi</option>
+                <option value="en">Indian English</option>
                 <option value="kn">Kannada</option>
                 <option value="ta">Tamil</option>
               </select></label>
+            <label className="fld">🎙️ ElevenLabs API key (natural voice — optional)
+              <input className="input" type="password" value={twi.elevenlabs_key} onChange={e=>setTwi({...twi,elevenlabs_key:e.target.value})} placeholder={st?.elevenlabs?'saved (leave blank to keep)':'sk_… (else Google TTS)'}/></label>
           </div>
           <div className="pref-row" style={{marginTop:8}}>
             <div><div className="pref-label">Enable real alerts</div><div style={{fontSize:11,color:'var(--text-muted)'}}>Off = simulate in-app on the Floor</div></div>
@@ -601,27 +611,42 @@ function Prevention({ recovery }) {
   const [camps, setCamps] = useState(null)
   const [screen, setScreen] = useState(null)
   const [bridges, setBridges] = useState([])
+  const [insights, setInsights] = useState(null)
+  const mapEl = useRef(null)
+  const mapObj = useRef(null)
 
   useEffect(()=>{
     fetch(`${API}/prevention/projection`).then(r=>r.json()).then(setProj).catch(()=>{})
     fetch(`${API}/prevention/camps`).then(r=>r.json()).then(setCamps).catch(()=>{})
     fetch(`${API}/screening/stats`).then(r=>r.json()).then(setScreen).catch(()=>{})
     fetch(`${API}/bridges`).then(r=>r.json()).then(d=>setBridges(d.bridges||[])).catch(()=>{})
+    fetch(`${API}/insights`).then(r=>r.json()).then(setInsights).catch(()=>{})
     const t = setInterval(()=>fetch(`${API}/screening/stats`).then(r=>r.json()).then(setScreen).catch(()=>{}), 4000)
     return ()=>clearInterval(t)
   },[])
 
-  // normalize lat/lon to minimap box
   const pts = bridges.filter(b=>b.centroid_lat&&b.centroid_lon).map(b=>({lat:b.centroid_lat,lon:b.centroid_lon}))
-  const all = [...pts, ...((camps?.camps)||[]).map(c=>({lat:c.lat,lon:c.lon}))]
-  const bounds = all.length ? {
-    minLat:Math.min(...all.map(p=>p.lat)), maxLat:Math.max(...all.map(p=>p.lat)),
-    minLon:Math.min(...all.map(p=>p.lon)), maxLon:Math.max(...all.map(p=>p.lon)),
-  } : null
-  const xy = (lat,lon)=> !bounds ? {x:'50%',y:'50%'} : {
-    x: `${6 + 88*(lon-bounds.minLon)/((bounds.maxLon-bounds.minLon)||1)}%`,
-    y: `${94 - 88*(lat-bounds.minLat)/((bounds.maxLat-bounds.minLat)||1)}%`,
-  }
+
+  // Real OpenStreetMap (Leaflet) with donor clusters + camp pins
+  useEffect(()=>{
+    const L = window.L
+    if (!L || !mapEl.current || !(camps?.camps?.length)) return
+    if (!mapObj.current){
+      mapObj.current = L.map(mapEl.current, {scrollWheelZoom:false, attributionControl:false})
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19}).addTo(mapObj.current)
+    }
+    const m = mapObj.current
+    m._rs?.forEach(l=>m.removeLayer(l)); m._rs=[]
+    pts.forEach(p=>{ const c=L.circleMarker([p.lat,p.lon],{radius:3,color:'#9b8f7e',weight:0,fillOpacity:0.5}).addTo(m); m._rs.push(c) })
+    camps.camps.forEach(c=>{
+      const mk=L.circleMarker([c.lat,c.lon],{radius:9,color:'#fff',weight:2,fillColor:'#0d9488',fillOpacity:1}).addTo(m)
+        .bindPopup(`Camp ${c.camp}<br>${fmt(c.donors_in_cluster)} donors near`)
+      m._rs.push(mk)
+    })
+    const allLL=[...pts.map(p=>[p.lat,p.lon]),...camps.camps.map(c=>[c.lat,c.lon])]
+    if(allLL.length) m.fitBounds(allLL,{padding:[30,30]})
+    setTimeout(()=>m.invalidateSize(),100)
+  },[camps, bridges])
 
   return (
     <div className="prevention">
@@ -669,10 +694,7 @@ function Prevention({ recovery }) {
       <div className="prev-hero">
         <div className="card">
           <div className="card-title">Camp placement · k-means on 7,033 donor locations</div>
-          <div className="minimap">
-            {pts.map((p,i)=>{const {x,y}=xy(p.lat,p.lon);return <div key={i} className="dot" style={{left:x,top:y}}/>})}
-            {(camps?.camps||[]).map(c=>{const {x,y}=xy(c.lat,c.lon);return <div key={c.camp} className="camp" style={{left:x,top:y}} title={`Camp ${c.camp}`}/>})}
-          </div>
+          <div ref={mapEl} className="minimap" style={{height:240}}/>
           {camps && <div className="banner info" style={{marginTop:12}}>📍 Place <b>{camps.k}</b> camps → reach <b>{camps.coverage_pct}%</b> of the active pool within {camps.radius_km} km.</div>}
         </div>
         <div className="card">
@@ -689,6 +711,29 @@ function Prevention({ recovery }) {
             {!camps && <div style={{color:'var(--text-muted)',fontSize:12}}>Loading camp model…</div>}
           </div>
         </div>
+      </div>
+
+      {/* Dataset patterns / findings */}
+      <div className="card">
+        <div className="card-title">🔎 What the dataset reveals · patterns we can act on</div>
+        {insights ? (
+          <>
+            <div className="board-stats" style={{marginBottom:14}}>
+              <div className="stat-card"><div className="label">Donors</div><div className="value">{fmt(insights.total_donors)}</div><div className="sub">in the dataset</div></div>
+              <div className="stat-card" style={{color:'var(--red-500)'}}><div className="label">Inactive</div><div className="value" style={{color:'var(--red-500)'}}>{insights.inactive_pct}%</div><div className="sub">churned / burnt out</div></div>
+              <div className="stat-card" style={{color:'var(--green-500)'}}><div className="label">Eligible now</div><div className="value" style={{color:'var(--green-500)'}}>{insights.eligible_pct}%</div><div className="sub">90-day window</div></div>
+              <div className="stat-card" style={{color:'var(--amber-400)'}}><div className="label">Max calls / donation</div><div className="value" style={{color:'var(--amber-400)'}}>{insights.max_calls}</div><div className="sub">the waste we delete</div></div>
+              <div className="stat-card" style={{color:'var(--teal-400)'}}><div className="label">Emergency pool</div><div className="value" style={{color:'var(--teal-400)'}}>{fmt(insights.emergency_pool)}</div><div className="sub">conversion candidates</div></div>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+              {insights.findings.map((f,i)=>(
+                <div key={i} className="roster-row" style={{alignItems:'flex-start',lineHeight:1.5,fontSize:12.5}}
+                  dangerouslySetInnerHTML={{__html: f.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/\*(.+?)\*/g,'<i>$1</i>')}}/>
+              ))}
+            </div>
+            <div style={{fontSize:11,color:'var(--text-muted)',marginTop:10}}>Computed live from the Blood Warriors dataset — the data ask + opportunity map for the future.</div>
+          </>
+        ) : <div style={{color:'var(--text-muted)',fontSize:12}}>Mining patterns…</div>}
       </div>
     </div>
   )

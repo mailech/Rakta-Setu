@@ -78,18 +78,30 @@ class ExchangeAgent:
     # CONCURRENCY LOCK TABLE
     # ──────────────────────────────────────────────
 
+    LOCK_TTL = 130  # seconds — locks auto-expire so abandoned negotiations don't
+                    # permanently tie up donors (just over the confirm wait window).
+
     def acquire_lock(self, user_id: str, neg_id: str) -> bool:
-        """Returns True if lock acquired, False if donor already in another negotiation."""
-        if user_id in self.lock_table:
+        """Returns True if lock acquired. A stale lock (older than LOCK_TTL) is reclaimed."""
+        import time
+        ts = getattr(self, "_lock_ts", None)
+        if ts is None:
+            ts = self._lock_ts = {}
+        now = time.monotonic()
+        if user_id in self.lock_table and (now - ts.get(user_id, 0)) < self.LOCK_TTL:
             return False
         self.lock_table[user_id] = neg_id
+        ts[user_id] = now
         return True
 
     def release_lock(self, user_id: str):
         self.lock_table.pop(user_id, None)
+        getattr(self, "_lock_ts", {}).pop(user_id, None)
 
     def is_locked(self, user_id: str) -> bool:
-        return user_id in self.lock_table
+        import time
+        ts = getattr(self, "_lock_ts", {})
+        return user_id in self.lock_table and (time.monotonic() - ts.get(user_id, 0)) < self.LOCK_TTL
 
     # ──────────────────────────────────────────────
     # ESCALATION HANDLER

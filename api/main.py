@@ -125,13 +125,23 @@ async def startup():
     init_db()
     get_data()
     set_broadcast_fn(global_broadcast)  # one router for all negotiations
-    try:
-        from notify import twilio_channel as _twi
-        r = _twi.autodetect_ngrok()
-        if r.get("ok"):
-            print(f"[api] auto-detected ngrok: {r['public_base']}")
-    except Exception:
-        pass
+    from notify import twilio_channel as _twi
+
+    async def _ngrok_watch():
+        """Keep public_base pinned to the live ngrok URL (it rotates on restart),
+        so Twilio webhooks never hit a dead tunnel mid-demo."""
+        last = None
+        while True:
+            try:
+                r = _twi.autodetect_ngrok()
+                if r.get("ok") and r["public_base"] != last:
+                    last = r["public_base"]
+                    print(f"[api] ngrok URL set: {last}")
+            except Exception:
+                pass
+            await asyncio.sleep(20)
+
+    asyncio.create_task(_ngrok_watch())
     print("[api] RAKTA-SETU API started. DB initialized.")
 
 
@@ -263,6 +273,7 @@ class IntakeRequest(BaseModel):
     days: Optional[int] = None            # needed in N days
     emergency: bool = False
     radius_km: float = 10.0
+    language: Optional[str] = None         # donor call language (te/hi/en/kn/ta)
 
 
 @app.post("/intake")
@@ -273,6 +284,8 @@ async def patient_intake(req: IntakeRequest, background_tasks: BackgroundTasks):
     """
     from data.profiles import donors_within_radius, normalize_bg
     donors, bridges, config, exchange, donors_by_id = get_data()
+    if req.language:
+        twi.set_config(call_language=req.language)   # the donor's spoken-call language
 
     # Resolve hospital location
     hosp_name, hosp_city = "the hospital", ""
@@ -323,8 +336,28 @@ async def patient_intake(req: IntakeRequest, background_tasks: BackgroundTasks):
     from llm import wrapper as _llm
     llm_fn = llm if _llm.bedrock_active() else None    # use Amazon Bedrock if enabled
 
+    # Per-attempt confirm wait (shorter than the default 120s so the radius
+    # escalation can re-try if nobody answers).
+    run_cfg = dict(config); run_cfg["CONFIRM_TIMEOUT_SECS"] = 45
+
     async def _run():
-        result = await run_negotiation(bridge, donors_by_id, exchange, config, llm_fn, neg_id=neg_id)
+        cur_radius = radius
+        result = {"result": "FAILED"}
+        for attempt in range(3):
+            result = await run_negotiation(bridge, donors_by_id, exchange, run_cfg, llm_fn, neg_id=neg_id)
+            if result.get("result") == "COVERED" or attempt == 2:
+                break
+            # Nobody confirmed → widen the radius and re-contact (incl. the same people).
+            cur_radius = round(cur_radius * 1.6, 1)
+            await ws_manager.broadcast(neg_id, {
+                "neg_id": neg_id, "from": "exchange:singleton", "to": "network", "round": 3,
+                "action": "ESCALATE", "params": {"radius_km": cur_radius, "attempt": attempt + 2},
+                "say": f"🔁 No one responded — expanding the search to {cur_radius} km and re-contacting donors…"})
+            wider = donors_within_radius(donors, lat, lon, cur_radius, bg,
+                                        require_eligible=pol["only_eligible"], emergency=True)
+            wider = [m for m in wider if donor_policy.passes(m, emergency=True)]
+            bridge["roster"] = [{k: v for k, v in m.items() if k != "_rank"} for m in wider[:60]]
+            bridge["roster_size"] = len(bridge["roster"]); bridge["emergency"] = True
         await ws_manager.broadcast(neg_id, {"type": "negotiation_complete", **result})
         await ws_manager.broadcast("__all__", {"type": "negotiation_complete", **result})
     background_tasks.add_task(_run)
@@ -572,6 +605,46 @@ async def screening_stats():
     return {"screenings_scheduled": count}
 
 
+@app.get("/insights")
+async def dataset_insights():
+    """Meaningful patterns mined from the real Blood Warriors dataset."""
+    donors, bridges, _, _, _ = get_data()
+    n = len(donors) or 1
+    inactive = sum(1 for d in donors if str(d.get("user_donation_active_status", "")).lower() == "inactive")
+    eligible = sum(1 for d in donors if d.get("eligible_now"))
+    high_fatigue = sum(1 for d in donors if (d.get("fatigue_score") or 0) > 0.7)
+    cdr = [d.get("calls_to_donations_ratio") or 0 for d in donors]
+    female = sum(1 for d in donors if str(d.get("gender", "")).lower().startswith("f"))
+    emerg = sum(1 for d in donors if d.get("role") == "Emergency Donor")
+    # churn reason breakdown
+    reasons = {}
+    for d in donors:
+        if str(d.get("user_donation_active_status", "")).lower() == "inactive":
+            c = (d.get("inactive_trigger_comment") or "Other").strip()[:40]
+            reasons[c] = reasons.get(c, 0) + 1
+    top_reason = max(reasons.items(), key=lambda x: x[1])[0] if reasons else "—"
+    green = sum(1 for b in bridges if b.get("health_label") == "green")
+    amber = sum(1 for b in bridges if b.get("health_label") == "amber")
+    red = sum(1 for b in bridges if b.get("health_label") == "red")
+
+    pct = lambda x: round(100 * x / n, 1)
+    findings = [
+        f"📞 Up to **{int(max(cdr))} calls** were logged for a single donation — the coordination waste this system deletes.",
+        f"🔥 **{pct(inactive)}%** of donors are inactive; the top churn reason is *“{top_reason}”* — a burnout pattern, not lack of willingness.",
+        f"🩸 Only **{pct(eligible)}%** are eligible right now — supply must be planned around the 90-day window, not assumed.",
+        f"🛡️ **{high_fatigue}** donors are high-fatigue (>70%) and auto-protected — the system refuses to over-ask them.",
+        f"👩 Female donors are just **{pct(female)}%** — the deferral/anaemia gap Module A targets.",
+        f"🚑 **{emerg:,}** donors are Emergency/One-Time — a large conversion pool into committed bridge donors.",
+        f"📊 **{red}** bridges are critical (red) and **{amber}** at-risk (amber) of {len(bridges)} — gaps visible *before* crisis.",
+    ]
+    return {
+        "total_donors": n, "inactive_pct": pct(inactive), "eligible_pct": pct(eligible),
+        "high_fatigue": high_fatigue, "max_calls": int(max(cdr)), "female_pct": pct(female),
+        "emergency_pool": emerg, "bridges": {"green": green, "amber": amber, "red": red},
+        "top_churn_reason": top_reason, "findings": findings,
+    }
+
+
 @app.get("/prevention/projection")
 async def prevention_projection(screened_per_year: Optional[int] = None):
     return flywheel.projection(screened_per_year)
@@ -797,6 +870,8 @@ class TwilioConfig(BaseModel):
     enabled: Optional[bool] = None
     call_mode: Optional[str] = None         # 'conversational' | 'dtmf'
     call_language: Optional[str] = None     # te/hi/en/kn/ta
+    elevenlabs_key: Optional[str] = None    # natural multilingual voice
+    elevenlabs_voice: Optional[str] = None
 
 
 @app.post("/twilio/config")
@@ -827,18 +902,28 @@ async def twilio_test(req: TwilioConfig):
         "RAKTA-SETU test. Reply YES to confirm or NO to decline.")
 
 
-@app.post("/twilio/voice/converse/{neg_id}/{user_id}")
-async def twilio_voice_converse(neg_id: str, user_id: str, SpeechResult: str = Form("")):
+@app.post("/twilio/voice/converse/{token}")
+async def twilio_voice_converse(token: str, SpeechResult: str = Form("")):
     """Webhook: donor's spoken Telugu/Hindi -> Bedrock replies in their language (voice agent)."""
     from notify import voice_agent
+    neg_id, user_id = voice_agent.resolve_token(token)
+    if not neg_id:
+        return Response(content='<Response><Say>Session expired. Goodbye.</Say><Hangup/></Response>',
+                        media_type="application/xml")
     twiml, intent, spoken, donor_text = await asyncio.to_thread(
         voice_agent.handle_turn, neg_id, user_id, SpeechResult)
-    # stream the live conversation onto the Floor
+    # 1) what the DONOR actually said (their voice, transcribed) — its own message
+    if donor_text and donor_text != "(silence)":
+        await ws_manager.broadcast(neg_id, {
+            "neg_id": neg_id, "from": "human", "to": f"proxy:{user_id}", "round": 3,
+            "action": "OFFER", "params": {"channel": "voice_ai", "via": "spoken"},
+            "say": f"🗣️ Donor said: “{donor_text}”"})
+    # 2) the AGENT's spoken reply
     await ws_manager.broadcast(neg_id, {
         "neg_id": neg_id, "from": f"proxy:{user_id}", "to": "guardian", "round": 3,
         "action": "ACCEPT" if intent == "CONFIRM" else "DECLINE" if intent == "DECLINE" else "COUNTER",
-        "params": {"channel": "voice_ai", "donor_said": donor_text[:60]},
-        "say": f"🗣️ Donor: \"{donor_text[:50]}\"  →  🤖 {spoken[:60]}"})
+        "params": {"channel": "voice_ai"},
+        "say": f"🤖 {spoken}"})
     if intent == "CONFIRM":
         _notify_patient(user_id, neg_id)
     return Response(content=twiml, media_type="application/xml")
