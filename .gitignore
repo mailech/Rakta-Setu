@@ -12,6 +12,8 @@ data/live_phones.json
 
 # ─── Runtime state / generated at runtime ───────────────
 data/policy_cfg.json
+data/bedrock_cfg.json
+data/translate_cfg.json
 data/rakta_setu.db
 data/llm_cache/
 api_log.txt

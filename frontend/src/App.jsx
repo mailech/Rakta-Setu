@@ -297,6 +297,7 @@ function Console({ bridges, stats, refresh }) {
                     <div><span>📍 Distance</span><b>{d.distance_km!=null?`${d.distance_km} km`:'—'}</b></div>
                     <div><span>🏙 City</span><b>{d.city||'—'}</b></div>
                     {d.phone && <div><span>📱 Phone</span><b>{d.phone}</b></div>}
+                    {d.language_name && <div><span>🌐 Language</span><b>{d.language_name}</b></div>}
                     {d.donations!=null && <div><span>🩸 Donations</span><b>{d.donations}</b></div>}
                   </div>
                 </div>
@@ -418,13 +419,19 @@ function Setup(){
   const [newPhone, setNewPhone] = useState('')
   const [pol, setPol] = useState(null)
   const [aws, setAws] = useState(null)
+  const [bedrock, setBedrock] = useState(null)
+  const [trans, setTrans] = useState(null)
   const load = ()=>{
     fetch(`${API}/twilio/config`).then(r=>r.json()).then(s=>{setSt(s); setTwi(t=>({...t, donor_phone:s.donor_phone||t.donor_phone, patient_phone:s.patient_phone||t.patient_phone, public_base:s.public_base||t.public_base, call_from:s.call_from||t.call_from, enabled:s.enabled}))}).catch(()=>{})
     fetch(`${API}/live-phones`).then(r=>r.json()).then(d=>setPhones(d.phones||[])).catch(()=>{})
     fetch(`${API}/policy`).then(r=>r.json()).then(setPol).catch(()=>{})
     fetch(`${API}/aws/status`).then(r=>r.json()).then(setAws).catch(()=>{})
+    fetch(`${API}/bedrock/config`).then(r=>r.json()).then(setBedrock).catch(()=>{})
+    fetch(`${API}/translate/config`).then(r=>r.json()).then(setTrans).catch(()=>{})
   }
   useEffect(()=>{ load() },[])
+  const toggleBedrock = async()=>{ await fetch(`${API}/bedrock/config`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!bedrock?.enabled})}).catch(()=>{}); setTimeout(load,400) }
+  const toggleTrans = async()=>{ await fetch(`${API}/translate/config`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!trans?.enabled})}).catch(()=>{}); setTimeout(load,400) }
   const savePol = async(p)=>{ setPol(p); await fetch(`${API}/policy`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}).catch(()=>{}) }
   const saveAws = async()=>{ await fetch(`${API}/aws/config`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bucket:aws?.bucket,region:aws?.region})}).catch(()=>{}); setTimeout(load,400) }
   const testAws = async()=>{ await fetch(`${API}/aws/test`,{method:'POST'}).catch(()=>{}); setTimeout(load,1000) }
@@ -524,6 +531,41 @@ function Setup(){
             <div>AWS creds: <b style={{color:aws.aws_creds?'var(--green-500)':'var(--amber-400)'}}>{aws.aws_creds?'detected':'not set → mock'}</b> · bucket <b>{aws.bucket||'—'}</b></div>
             <div>Objects written: <b>{aws.last?.count||0}</b>{aws.last?.key?` · last: ${aws.last.key}`:''}</div>
             {aws.last?.status && aws.last.status!=='none' && <div>Last: <span className={`chip ${aws.last.status==='uploaded'?'chip-green':aws.last.status==='error'?'chip-red':'chip-amber'}`}>{aws.last.status}</span></div>}
+          </div>}
+        </div>
+      </div>
+
+      <div className="prev-hero">
+        {/* Amazon Bedrock — agents' brain */}
+        <div className="card">
+          <div className="card-title">🧠 Amazon Bedrock (agents' AI)</div>
+          <div style={{fontSize:12,color:'var(--text-secondary)',marginBottom:10,lineHeight:1.5}}>
+            When ON, the agents' negotiation lines + failure-learning lessons come from Claude (Haiku) on Bedrock — real AWS AI, not canned text.
+          </div>
+          <div className="pref-row"><div><div className="pref-label">Use Bedrock for agent language</div>
+            <div style={{fontSize:11,color:'var(--text-muted)'}}>Off = fast mock responses</div></div>
+            <div className={`toggle ${bedrock?.enabled?'on':''}`} onClick={toggleBedrock}/></div>
+          {bedrock && <div style={{marginTop:8,fontSize:11,color:'var(--text-muted)',lineHeight:1.8}}>
+            <div>Model: <b>{bedrock.model}</b> · region <b>{bedrock.region}</b></div>
+            <div>Status: <span className={`chip ${bedrock.active?'chip-green':'chip-amber'}`}>{bedrock.active?'ACTIVE':bedrock.enabled?'on, but no AWS creds':'off'}</span></div>
+            {bedrock.last_call?.backend && bedrock.last_call.backend!=='none' && <div>Last call: {bedrock.last_call.backend} {bedrock.last_call.ok?'✓':'✗'}</div>}
+          </div>}
+          <div style={{marginTop:8,fontSize:10,color:'var(--text-muted)'}}>Needs Claude model access enabled in Bedrock (us-east-1).</div>
+        </div>
+
+        {/* Amazon Translate — Rural Reach */}
+        <div className="card">
+          <div className="card-title">🌐 Amazon Translate (Rural Reach)</div>
+          <div style={{fontSize:12,color:'var(--text-secondary)',marginBottom:10,lineHeight:1.5}}>
+            When ON, each donor's SMS is translated into their preferred language (Telugu / Hindi / Kannada) before Twilio sends it.
+          </div>
+          <div className="pref-row"><div><div className="pref-label">Translate donor SMS</div>
+            <div style={{fontSize:11,color:'var(--text-muted)'}}>Per-donor language from their profile</div></div>
+            <div className={`toggle ${trans?.enabled?'on':''}`} onClick={toggleTrans}/></div>
+          {trans && <div style={{marginTop:8,fontSize:11,color:'var(--text-muted)',lineHeight:1.8}}>
+            <div>Region: <b>{trans.region}</b></div>
+            <div>Status: <span className={`chip ${trans.active?'chip-green':'chip-amber'}`}>{trans.active?'ACTIVE':trans.enabled?'on, but no AWS creds':'off'}</span></div>
+            {trans.last?.status && trans.last.status!=='none' && <div>Last: {trans.last.status} {trans.last.detail||''}</div>}
           </div>}
         </div>
       </div>

@@ -193,7 +193,8 @@ async def trigger_negotiation(req: TriggerRequest, background_tasks: BackgroundT
     if not bridge:
         raise HTTPException(404, "Bridge not found")
 
-    llm_fn = llm if req.use_llm else None
+    from llm import wrapper as _llm
+    llm_fn = llm if (req.use_llm or _llm.bedrock_active()) else None
 
     # Mint the neg_id here so the client can subscribe to the matching WS room.
     safe_bridge_id = bridge['bridge_id'].replace("/", "").replace("\\", "")[:8]
@@ -319,8 +320,11 @@ async def patient_intake(req: IntakeRequest, background_tasks: BackgroundTasks):
         "days_to_next_transfusion": req.days if req.days is not None else 7,
     }
 
+    from llm import wrapper as _llm
+    llm_fn = llm if _llm.bedrock_active() else None    # use Amazon Bedrock if enabled
+
     async def _run():
-        result = await run_negotiation(bridge, donors_by_id, exchange, config, None, neg_id=neg_id)
+        result = await run_negotiation(bridge, donors_by_id, exchange, config, llm_fn, neg_id=neg_id)
         await ws_manager.broadcast(neg_id, {"type": "negotiation_complete", **result})
         await ws_manager.broadcast("__all__", {"type": "negotiation_complete", **result})
     background_tasks.add_task(_run)
@@ -676,6 +680,43 @@ async def aws_test():
     """Write a test object to S3 to prove the wiring (shows up in the S3 console)."""
     return s3_audit.upload("TEST-" + datetime.utcnow().strftime("%H%M%S"),
                            {"test": True, "ts": datetime.utcnow().isoformat()})
+
+
+# ── Amazon Bedrock (agents' AI brain) ──
+from llm import wrapper as llm_wrapper
+from aws import translate as translate_mod
+
+
+class BedrockConfig(BaseModel):
+    enabled: Optional[bool] = None
+    model: Optional[str] = None
+    region: Optional[str] = None
+
+
+@app.get("/bedrock/config")
+async def get_bedrock_config():
+    return llm_wrapper.public_config()
+
+
+@app.post("/bedrock/config")
+async def set_bedrock_config(req: BedrockConfig):
+    return llm_wrapper.set_config(**{k: v for k, v in req.dict().items() if v is not None})
+
+
+# ── Amazon Translate (Rural Reach) ──
+class TranslateConfig(BaseModel):
+    enabled: Optional[bool] = None
+    region: Optional[str] = None
+
+
+@app.get("/translate/config")
+async def get_translate_config():
+    return translate_mod.public_config()
+
+
+@app.post("/translate/config")
+async def set_translate_config(req: TranslateConfig):
+    return translate_mod.set_config(**{k: v for k, v in req.dict().items() if v is not None})
 
 
 # ──────────────────────────────────────────────

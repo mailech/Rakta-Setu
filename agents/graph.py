@@ -308,12 +308,30 @@ def _dispatch_real_channel(neg_id, bridge, accepted_resp):
         body = (f"RAKTA-SETU: {urgent}A patient needs {bg} blood at {hosp} on {date} {tm}. "
                 f"Can you donate? We'll call you in ~{delay}s — press 1 to confirm, 2 to decline. "
                 f"(On WhatsApp you can also reply YES/NO.)")
+
+        # ── Amazon Translate "Rural Reach": send in the donor's own language ──
+        lang_name = "English"
+        try:
+            from data.profiles import profile
+            from aws import translate as tr
+            roster = {d["user_id"]: d for d in bridge.get("roster", [])}
+            prof = (roster.get(uid, {}).get("profile")) or profile(roster.get(uid, {"user_id": uid}))
+            t = tr.translate(body, prof.get("preferred_language", "en"))
+            body = t["text"]; lang_name = t["lang_name"]
+            if t["translated"]:
+                _log(neg_id, 3, {
+                    "neg_id": neg_id, "round": 3, "from": "exchange:singleton", "to": "donor",
+                    "action": "REQUEST_HUMAN_CONFIRM", "params": {"channel": "translate", "lang": lang_name},
+                    "say": f"🌐 Amazon Translate → {lang_name}: {body[:80]}"})
+        except Exception as te:
+            print(f"[graph] translate skipped: {te}")
+
         res = twi.send_whatsapp_confirm(neg_id, uid, None, body)   # phone resolved internally
         _log(neg_id, 3, {
             "neg_id": neg_id, "round": 3, "from": "exchange:singleton", "to": "donor",
             "action": "REQUEST_HUMAN_CONFIRM",
-            "params": {"channel": "sms", "status": res.get("status")},
-            "say": f"📲 SMS sent to donor's real phone ({res.get('status')}) — rings their phone in {twi.ESCALATE_AFTER}s if ignored."})
+            "params": {"channel": "sms", "lang": lang_name, "status": res.get("status")},
+            "say": f"📲 SMS sent to donor's real phone in {lang_name} ({res.get('status')}) — rings in {delay}s if ignored."})
     except Exception as e:
         print(f"[graph] real-channel dispatch failed: {e}")
 

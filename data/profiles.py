@@ -26,6 +26,11 @@ _LAST = ["Reddy","Sharma","Kumar","Rao","Nair","Patel","Khan","Singh","Iyer",
 _BG = (["O+"]*37 + ["B+"]*32 + ["A+"]*22 + ["AB+"]*7
        + ["O-"]*2 + ["B-"]*2 + ["A-"]*1 + ["AB-"]*1)
 
+# Preferred language mix (demo, weighted for the Hyderabad/Telangana region) —
+# powers the Amazon Translate "Rural Reach" feature. (code, display name)
+_LANGS = ([("en", "English")]*8 + [("te", "Telugu")]*7 + [("hi", "Hindi")]*4
+          + [("kn", "Kannada")]*1)
+
 # Who can donate TO whom (donor group -> compatible recipient groups)
 COMPAT = {
     "O-":["O-","O+","A-","A+","B-","B+","AB-","AB+"], "O+":["O+","A+","B+","AB+"],
@@ -74,6 +79,7 @@ def profile(donor: dict) -> dict:
     mo = 1 + (h // 13) % 12
     dy = 1 + (h // 31) % 28
     bg = normalize_bg(donor.get("blood_group")) or _BG[h % len(_BG)]
+    lang_code, lang_name = _LANGS[(h // 17) % len(_LANGS)]
     return {
         "user_id": uid,
         "name": f"{first} {last}",
@@ -82,6 +88,8 @@ def profile(donor: dict) -> dict:
         "gender": g,
         "blood_group": bg,
         "blood_group_simulated": normalize_bg(donor.get("blood_group")) is None,
+        "preferred_language": lang_code,
+        "language_name": lang_name,
         "phone": None,  # filled when a live phone is assigned
     }
 
