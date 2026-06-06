@@ -30,7 +30,14 @@ last = {"status": "none", "key": None, "ts": None, "detail": None, "count": 0}
 
 
 def _have_aws() -> bool:
-    return bool(os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"))
+    """True if boto3 can resolve credentials anywhere (env vars, ~/.aws, IAM role)."""
+    if os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
+        return True
+    try:
+        import boto3
+        return boto3.Session().get_credentials() is not None
+    except Exception:
+        return False
 
 
 def set_config(**kw):

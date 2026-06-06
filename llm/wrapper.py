@@ -21,7 +21,9 @@ _CFG_FILE = Path(__file__).parent.parent / "data" / "bedrock_cfg.json"
 
 cfg = {
     "enabled": os.environ.get("USE_BEDROCK", "").lower() in ("1", "true", "yes"),
-    "model":   os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0"),
+    # Claude 3 Haiku is now "legacy" on Bedrock; default to a current model
+    # (3.5 Haiku via the us cross-region inference profile).
+    "model":   os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"),
     "region":  os.environ.get("BEDROCK_REGION", "us-east-1"),
 }
 if _CFG_FILE.exists():
@@ -52,7 +54,14 @@ MOCK_LESSON_RESPONSE = {
 
 
 def _have_aws() -> bool:
-    return bool(os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"))
+    """True if boto3 can resolve credentials anywhere (env vars, ~/.aws, IAM role)."""
+    if os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
+        return True
+    try:
+        import boto3
+        return boto3.Session().get_credentials() is not None
+    except Exception:
+        return False
 
 
 def set_config(**kw) -> dict:
