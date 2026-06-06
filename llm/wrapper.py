@@ -21,9 +21,10 @@ _CFG_FILE = Path(__file__).parent.parent / "data" / "bedrock_cfg.json"
 
 cfg = {
     "enabled": os.environ.get("USE_BEDROCK", "").lower() in ("1", "true", "yes"),
-    # Claude 3 Haiku is now "legacy" on Bedrock; default to a current model
-    # (3.5 Haiku via the us cross-region inference profile).
-    "model":   os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0"),
+    # Current active Bedrock model (Claude Haiku 4.5) via the us cross-region
+    # inference profile — older Claude 3.x/3.5 IDs are now legacy/EOL, and the
+    # bare model id requires the 'us.' inference-profile prefix.
+    "model":   os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
     "region":  os.environ.get("BEDROCK_REGION", "us-east-1"),
 }
 if _CFG_FILE.exists():
