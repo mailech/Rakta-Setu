@@ -9,6 +9,10 @@ data/live_phones.json
 .env
 *.env
 !*.env.example
+frontend/.env.production
+
+# ─── AWS deploy artifacts ────────────────────────────────
+*.apprunner-config.json
 
 # ─── Runtime state / generated at runtime ───────────────
 data/policy_cfg.json

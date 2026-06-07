@@ -37,7 +37,7 @@ cfg = {
     "public_base":   os.environ.get("PUBLIC_BASE_URL", ""),
     "donor_phone":   os.environ.get("DONOR_PHONE", ""),
     "patient_phone": os.environ.get("PATIENT_PHONE", "+917416470528"),
-    "enabled":       False,
+    "enabled":       os.environ.get("CALL_ENABLED", "").lower() in ("1", "true", "yes"),
     "call_mode":     os.environ.get("CALL_MODE", "conversational"),  # 'conversational' | 'dtmf'
     "call_language": os.environ.get("CALL_LANGUAGE", "te"),          # te/hi/en/kn/ta
     "elevenlabs_key":   os.environ.get("ELEVENLABS_API_KEY", ""),    # natural multilingual TTS
@@ -279,7 +279,26 @@ def notify_patient_once(neg_id: str, phone: str, body: str) -> dict:
     if neg_id in _notified_patients:
         return {"status": "duplicate", "to": phone}
     _notified_patients.add(neg_id)
-    return send_plain_sms(phone, body)
+    return send_whatsapp(phone, body)
+
+
+def send_whatsapp(phone: str, body: str) -> dict:
+    """Send a WhatsApp message (bypasses India DLT SMS blocking)."""
+    phone = _norm(phone)
+    if not (cfg.get("account_sid") and cfg.get("auth_token") and cfg.get("whatsapp_from")):
+        _p(f"[twilio:MOCK WhatsApp] -> {phone}\n{body}")
+        return {"status": "mock", "to": phone}
+    try:
+        msg = _client().messages.create(
+            from_=cfg["whatsapp_from"], 
+            to=f"whatsapp:{phone}", 
+            body=body
+        )
+        _p(f"[twilio] WhatsApp sent to {phone} (sid={msg.sid})")
+        return {"status": "sent", "to": phone, "detail": msg.sid}
+    except Exception as e:
+        _p(f"[twilio] WhatsApp error: {e}")
+        return {"status": "error", "to": phone, "detail": str(e)}
 
 
 def send_plain_sms(phone: str, body: str) -> dict:

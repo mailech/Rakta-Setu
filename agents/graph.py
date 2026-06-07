@@ -385,7 +385,7 @@ def _notify_patient(neg_id, bridge, confirmed, all_donors):
         donor["blood_group"] = prof["blood_group"]
         donor.setdefault("distance_km", dist_map.get(uid))
         msg = sms.compose_patient_message(bridge, donor, bridge.get("next_transfusion_date", ""))
-        res = twi.notify_patient_once(neg_id, phone, msg)
+        res = sms.send_sms(phone, msg)
         _log(neg_id, 3, {
             "neg_id": neg_id, "round": 3, "from": "exchange:singleton", "to": "patient",
             "action": "ACCEPT",

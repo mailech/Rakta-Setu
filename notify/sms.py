@@ -34,7 +34,13 @@ def get_patient_phone() -> Optional[str]:
 
 
 def _have_aws() -> bool:
-    return bool(os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"))
+    """Detect creds via the FULL boto3 chain (env vars / ~/.aws / IAM role),
+    not just env vars — App Runner / EC2 use an instance role with no env keys."""
+    try:
+        import boto3
+        return boto3.Session().get_credentials() is not None
+    except Exception:
+        return False
 
 
 def _safe_print(s: str):
@@ -45,27 +51,115 @@ def _safe_print(s: str):
         print(s.encode("ascii", "replace").decode("ascii"))
 
 
+def _norm(phone: str) -> str:
+    """Best-effort E.164 normalization (India default). Mirrors twilio_channel._norm."""
+    p = (phone or "").strip().replace(" ", "").replace("-", "")
+    if not p:
+        return ""
+    if p.startswith("+"):
+        return p
+    digits = "".join(ch for ch in p if ch.isdigit())
+    if len(digits) == 10:          # bare Indian mobile
+        return "+91" + digits
+    return "+" + digits
+
+
+def _sns():
+    import boto3
+    return boto3.client("sns", region_name=AWS_REGION)
+
+
+# ── SNS SMS sandbox awareness ───────────────────────────────────────────────
+# In the SNS sandbox, publish() returns a MessageId (looks "sent") for ANY number
+# but AWS silently DROPS delivery to numbers that aren't verified. We cache the
+# sandbox status + verified set so we can tell the truth instead of faking "sent".
+_sandbox = {"checked": False, "in_sandbox": False, "verified": set()}
+
+
+def sandbox_state(force: bool = False) -> dict:
+    """Return {'in_sandbox': bool, 'verified': set(E.164)}. Cached; force=True refreshes."""
+    if _sandbox["checked"] and not force:
+        return _sandbox
+    try:
+        c = _sns()
+        _sandbox["in_sandbox"] = bool(c.get_sms_sandbox_account_status().get("IsInSandbox", False))
+        verified = set()
+        if _sandbox["in_sandbox"]:
+            token = None
+            while True:
+                kw = {"NextToken": token} if token else {}
+                resp = c.list_sms_sandbox_phone_numbers(**kw)
+                for n in resp.get("PhoneNumbers", []):
+                    if n.get("Status") == "Verified":
+                        verified.add(n["PhoneNumber"])
+                token = resp.get("NextToken")
+                if not token:
+                    break
+        _sandbox["verified"] = verified
+        _sandbox["checked"] = True
+    except Exception as e:
+        _safe_print(f"[sms] sandbox-status check failed (assuming production): {e}")
+        _sandbox["checked"] = True   # don't hammer the API on repeated failures
+    return _sandbox
+
+
+def verify_number(phone: str) -> dict:
+    """Start sandbox verification for a number — AWS texts it a one-time code.
+    Follow up with confirm_verification(phone, otp)."""
+    phone = _norm(phone)
+    try:
+        _sns().create_sms_sandbox_phone_number(PhoneNumber=phone, LanguageCode="en-US")
+        _safe_print(f"[sms] verification code sent to {phone}")
+        return {"status": "otp_sent", "to": phone}
+    except Exception as e:
+        _safe_print(f"[sms] verify_number error for {phone}: {e}")
+        return {"status": "error", "to": phone, "detail": str(e)}
+
+
+def confirm_verification(phone: str, otp: str) -> dict:
+    """Finish sandbox verification with the code AWS texted to the number."""
+    phone = _norm(phone)
+    try:
+        _sns().verify_sms_sandbox_phone_number(PhoneNumber=phone, OneTimePassword=str(otp).strip())
+        sandbox_state(force=True)   # refresh the verified cache
+        _safe_print(f"[sms] {phone} is now VERIFIED")
+        return {"status": "verified", "to": phone}
+    except Exception as e:
+        _safe_print(f"[sms] confirm_verification error for {phone}: {e}")
+        return {"status": "error", "to": phone, "detail": str(e)}
+
+
 def send_sms(phone: str, message: str) -> dict:
     """
     Publish an SMS to a single phone number (E.164, e.g. +9198XXXXXXXX) via SNS.
-    Returns {status, to, detail}.
+    Returns {status, to, detail}. status is one of:
+      sent | unverified (sandbox, won't deliver) | mock (no creds) | skipped | error
     """
     global last_send
     ts = datetime.utcnow().isoformat()
+    phone = _norm(phone)
     if not phone:
-        last_send = {"status": "skipped", "to": None, "ts": ts, "detail": "no patient phone set"}
+        last_send = {"status": "skipped", "to": None, "ts": ts, "detail": "no phone set"}
         return last_send
 
     if not _have_aws():
         # Graceful mock — log to console so the demo flow still completes.
-        _safe_print(f"[sms:MOCK] -> {phone}\n{message}\n(set AWS creds to send for real)")
-        last_send = {"status": "mock", "to": phone, "ts": ts, "detail": "AWS creds not set — logged only"}
+        _safe_print(f"[sns:MOCK] AWS creds missing, skipping real SMS to {phone}")
+        last_send = {"status": "mock", "to": phone, "ts": ts, "detail": "AWS creds missing"}
+        return last_send
+
+    # Sandbox guard: don't pretend a silently-dropped message was delivered.
+    sb = sandbox_state()
+    if sb["in_sandbox"] and phone not in sb["verified"]:
+        detail = (f"SNS sandbox: {phone} is NOT verified, so AWS will NOT deliver this SMS. "
+                  f"Verify it (AWS console -> SNS -> Text messaging -> Sandbox, or sms.verify_number) "
+                  f"or move the account to SNS production.")
+        _safe_print(f"[sms] BLOCKED — {detail}")
+        last_send = {"status": "unverified", "to": phone, "ts": ts, "detail": detail}
         return last_send
 
     try:
-        import boto3
-        client = boto3.client("sns", region_name=AWS_REGION)
-        resp = client.publish(
+        resp = _sns().publish(
             PhoneNumber=phone,
             Message=message,
             MessageAttributes={

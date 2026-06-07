@@ -4,8 +4,9 @@ import {
 } from 'recharts'
 import './index.css'
 
-const API = 'http://localhost:8000'
-const WS  = 'ws://localhost:8000'
+// Prod: set VITE_API_URL to the backend's https URL (Amplify env var). Local: defaults.
+const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+const WS  = API.replace(/^http/, 'ws')   // http->ws, https->wss
 
 // ── helpers ───────────────────────────────────────────
 const ACTION_CHIP = {

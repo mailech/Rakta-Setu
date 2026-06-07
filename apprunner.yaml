@@ -1,0 +1,20 @@
+version: 1.0
+runtime: python311
+build:
+  commands:
+    build:
+      - pip install -r requirements.txt
+      - python -m data.engine   # regenerate donors.json/bridges.json if missing
+run:
+  command: python -m uvicorn api.main:app --host 0.0.0.0 --port 8080
+  network:
+    port: 8080
+  env:
+    - name: PYTHONUNBUFFERED
+      value: "1"
+    - name: AWS_DEFAULT_REGION
+      value: "us-east-1"
+# Secrets (TWILIO_*, ELEVENLABS_API_KEY, PUBLIC_BASE_URL, etc.) are set in the
+# App Runner service config / Secrets Manager — NOT committed here.
+# AWS access (Bedrock/Translate/S3/Polly) comes from the App Runner *instance role*,
+# so no AWS keys are needed in env.

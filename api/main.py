@@ -31,11 +31,19 @@ import sqlite3
 
 app = FastAPI(title="RAKTA-SETU API", version="1.0.0")
 
+import os as _os_cors
+_FRONTEND_URL = _os_cors.environ.get("FRONTEND_URL", "")
+_CORS_ORIGINS = (
+    [_FRONTEND_URL, "http://localhost:5173", "http://localhost:4173"]
+    if _FRONTEND_URL else ["*"]
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 # ──────────────────────────────────────────────
@@ -141,7 +149,12 @@ async def startup():
                 pass
             await asyncio.sleep(20)
 
-    asyncio.create_task(_ngrok_watch())
+    import os as _os
+    if _os.environ.get("PUBLIC_BASE_URL"):
+        _twi.set_config(public_base=_os.environ["PUBLIC_BASE_URL"])  # prod: fixed URL
+        print(f"[api] PUBLIC_BASE_URL set: {_os.environ['PUBLIC_BASE_URL']}")
+    else:
+        asyncio.create_task(_ngrok_watch())   # local dev: track rotating ngrok URL
     print("[api] RAKTA-SETU API started. DB initialized.")
 
 
@@ -389,6 +402,10 @@ async def confirm_donation(neg_id: str, req: ConfirmRequest):
     await ws_manager.broadcast(neg_id, {
         "type": "human_confirmed", "neg_id": neg_id, "user_id": req.user_id
     })
+    # Notify both sides on confirm (this in-app path previously skipped it,
+    # so no donor/patient message was ever sent when confirming via the UI).
+    _notify_patient(req.user_id, neg_id)
+    _notify_donor(req.user_id, neg_id)
     return {"status": "confirmed", "neg_id": neg_id, "user_id": req.user_id}
 
 
@@ -854,8 +871,35 @@ def _notify_patient(user_id: str, neg_id: str):
         f"Distance: {dist_s}\n"
         "No calls needed — your Guardian agent handled it. - Blood Warriors"
     )
-    res = twi.notify_patient_once(neg_id, phone, msg)
+    from notify import sms
+    res = sms.send_sms(phone, msg)
     print(f"[notify] patient {res.get('status')} -> {phone}")
+
+
+_notified_donors = set()   # neg_id|user_id already messaged — send the donor ONE confirmation
+
+
+def _notify_donor(user_id: str, neg_id: str):
+    """WhatsApp the donor to confirm their decision so they don't forget.
+    WhatsApp is used (not SNS SMS) because it reaches India without DLT
+    registration and isn't gated by the SNS sandbox verified-numbers list."""
+    key = f"{neg_id}|{user_id}"
+    if key in _notified_donors:
+        print(f"[notify] donor already messaged for {key} — skipping")
+        return
+    phone = twi._used_phones.get(user_id) or twi.cfg.get("donor_phone")
+    if not phone:
+        print("[notify] No donor phone set — skipping donor WhatsApp")
+        return
+    msg = (
+        "RAKTA-SETU: Thank you for confirming! 🩸\n"
+        "Your decision today will save a life. The patient's side has been notified and they will expect you.\n"
+        "- Blood Warriors"
+    )
+    res = twi.send_whatsapp(phone, msg)
+    if res.get("status") in ("sent", "mock"):
+        _notified_donors.add(key)
+    print(f"[notify] donor whatsapp {res.get('status')} -> {phone}")
 
 
 
@@ -926,6 +970,7 @@ async def twilio_voice_converse(token: str, SpeechResult: str = Form("")):
         "say": f"🤖 {spoken}"})
     if intent == "CONFIRM":
         _notify_patient(user_id, neg_id)
+        _notify_donor(user_id, neg_id)
     return Response(content=twiml, media_type="application/xml")
 
 
@@ -946,6 +991,7 @@ async def twilio_whatsapp_inbound(Body: str = Form(""), From: str = Form(""),
             "say": say})
         if ok:
             _notify_patient(uid, out.get("neg_id", ""))
+            _notify_donor(uid, out.get("neg_id", ""))
     reply = ("Thanks - you're confirmed! Your blood is saving a life today." if out.get("decision")
              else "No problem, maybe next time." if out.get("decision") is False
              else "Please reply YES to confirm or NO to decline.")
@@ -969,6 +1015,7 @@ async def twilio_voice_gather(neg_id: str, user_id: str, Digits: str = Form(""))
             "say": say})
         if confirmed:
             _notify_patient(user_id, neg_id)
+            _notify_donor(user_id, neg_id)
         spoken = ("Confirmed. Thank you for saving a life. Goodbye."
                   if confirmed else "Understood. No problem. Goodbye.")
         return Response(
